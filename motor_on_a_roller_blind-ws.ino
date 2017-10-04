@@ -10,7 +10,7 @@
 
 #include <WebSocketsServer.h>
 
-String version = "1.0";
+String version = "1.1";
 
 //Configure Default Settings
 String APid = "BlindsConnectAP";
@@ -366,29 +366,12 @@ void loop(void)
     if (currentPosition > path){
       small_stepper.step(-1);
       currentPosition = currentPosition - 1;
-
-      //Avoid flooding the websocket
-      if (tripCounter > 40){
-        int pos = (currentPosition * 100)/maxPosition;
-        webSocket.broadcastTXT("{ \"type\":\"position\", \"value\":"+String(pos)+"}");
-        tripCounter = 0;
-      }
-      tripCounter++;
-
     } else if (currentPosition < path){
       small_stepper.step(1);
       currentPosition = currentPosition + 1;
-      //Avoid flooding the websocket
-      if (tripCounter > 40){
-        int pos = (currentPosition * 100)/maxPosition;
-        webSocket.broadcastTXT("{ \"type\":\"position\", \"value\":"+String(pos)+"}");
-        tripCounter = 0;
-      }
-      tripCounter++;
     } else {
       path = 0;
       action = "";
-      tripCounter = 0;
       int pos = (currentPosition * 100)/maxPosition;
       webSocket.broadcastTXT("{ \"type\":\"position\", \"value\":"+String(pos)+"}");
       Serial.println("Stopped. Reached wanted position");
