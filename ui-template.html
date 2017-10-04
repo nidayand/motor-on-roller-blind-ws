@@ -1,6 +1,9 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <link rel="stylesheet" href="https://unpkg.com/onsenui/css/onsenui.css">
   <link rel="stylesheet" href="https://unpkg.com/onsenui/css/onsen-css-components.min.css">
   <script src="https://unpkg.com/onsenui/js/onsenui.min.js"></script>
@@ -58,14 +61,20 @@
   });
 
   var websocket;
+  var timeOut;
+  function retry(){
+    clearTimeout(timeOut);
+    timeOut = setTimeout(function(){
+      websocket=null; init();},2000);
+  };
   function init(){
-    websocket = null;
     ons.notification.toast({message: 'Connecting...', timeout: 1000});
     try{
       websocket = new WebSocket(wsUri);
+      websocket.onclose = function () {};
       websocket.onerror = function(evt) {
         ons.notification.toast({message: 'Cannot connect to device', timeout: 2000});
-        setTimeout(function(){init();},5000);
+        retry();
       };
       websocket.onopen = function(evt) {
         ons.notification.toast({message: 'Connected to device', timeout: 2000});
@@ -73,7 +82,7 @@
       };
       websocket.onclose = function(evt) {
         ons.notification.toast({message: 'Disconnected. Retrying', timeout: 2000});
-        setTimeout(function(){init();},5000);
+        retry();
       };
       websocket.onmessage = function(evt) {
         try{
@@ -88,7 +97,7 @@
       };
     } catch (e){
       ons.notification.toast({message: 'Cannot connect to device. Retrying...', timeout: 2000});
-      setTimeout(function(){init();},5000);
+      retry();
     };
   };
   function doSend(msg){
@@ -97,6 +106,11 @@
     }
   };
   window.addEventListener("load", init, false);
+  window.onbeforeunload = function() {
+    if (websocket && websocket.readyState == 1){
+      websocket.close();
+    };
+  };
   </script>
 </head>
 <body>
