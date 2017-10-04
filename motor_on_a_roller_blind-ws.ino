@@ -15,7 +15,6 @@ String version = "1.0";
 //Configure Default Settings
 String APid = "BlindsConnectAP";
 String APpw = "nidayand";
-String OTAhostname = "blinds";
 
 //Fixed settings for WIFI
 bool shouldSaveConfig = false;    //Used for WIFI Manager callback to save parameters
@@ -310,7 +309,6 @@ void setup(void)
     // Authentication to avoid unauthorized updates
     //ArduinoOTA.setPassword((const char *)"nidayand");
 
-    //ArduinoOTA.setHostname((OTAhostname + "-" + String(ESP.getChipId())).c_str());
     ArduinoOTA.setHostname(config_name);
 
     ArduinoOTA.onStart([]() {
