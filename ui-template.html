@@ -4,6 +4,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
+  <title>{NAME}</title>
   <link rel="stylesheet" href="https://unpkg.com/onsenui/css/onsenui.css">
   <link rel="stylesheet" href="https://unpkg.com/onsenui/css/onsen-css-components.min.css">
   <script src="https://unpkg.com/onsenui/js/onsenui.min.js"></script>
@@ -65,7 +66,7 @@
   function retry(){
     clearTimeout(timeOut);
     timeOut = setTimeout(function(){
-      websocket=null; init();},2000);
+      websocket=null; init();},5000);
   };
   function init(){
     ons.notification.toast({message: 'Connecting...', timeout: 1000});
@@ -78,7 +79,7 @@
       };
       websocket.onopen = function(evt) {
         ons.notification.toast({message: 'Connected to device', timeout: 2000});
-        doSend("(update)");
+        setTimeout(function(){doSend("(update)");}, 1000);
       };
       websocket.onclose = function(evt) {
         ons.notification.toast({message: 'Disconnected. Retrying', timeout: 2000});
@@ -87,12 +88,12 @@
       websocket.onmessage = function(evt) {
         try{
           var msg = JSON.parse(evt.data);
-          if (msg.type == "position"){
-            $("#pbar").attr("value", msg.value);
-          }
-          if (msg.type == "set"){
-            $("#setrange").val(msg.value);
-          }
+          if (typeof msg.position !== 'undefined'){
+            $("#pbar").attr("value", msg.position);
+          };
+          if (typeof msg.set !== 'undefined'){
+            $("#setrange").val(msg.set);
+          };
         } catch(err){}
       };
     } catch (e){

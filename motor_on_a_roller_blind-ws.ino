@@ -1,6 +1,7 @@
 #include <Stepper_28BYJ_48.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
+#include <PubSubClient.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 #include <WiFiManager.h>
@@ -10,37 +11,39 @@
 
 #include <WebSocketsServer.h>
 
-String version = "1.1.1";
+// Version number for checking if there are new code releases and notifying the user
+String version = "1.2.0";
 
-//Configure Default Settings
+//Configure Default Settings for AP logon
 String APid = "BlindsConnectAP";
 String APpw = "nidayand";
 
 //Fixed settings for WIFI
-bool shouldSaveConfig = false;    //Used for WIFI Manager callback to save parameters
-char config_name[40];             //Bonjour name of device
+WiFiClient espClient;
+PubSubClient psclient(espClient);   //MQTT client
+String mqttclientid;         //Generated MQTT client id
+char mqtt_server[40];             //WIFI config: MQTT server config (optional)
+char mqtt_port[6] = "1883";       //WIFI config: MQTT port config (optional)
+String outputTopic;               //MQTT topic for sending messages
+String inputTopic;                //MQTT topic for listening
+boolean mqttActive = true;
 
-boolean initLoop = true;
-boolean debugging = false;          //Debug mode. Toggled by payload "debug". Will send MQTT message at stop with position
-String debugTopic;
+char config_name[40];             //WIFI config: Bonjour name of device
 
 String action;                      //Action manual/auto
 int path = 0;                       //Direction of blind (1 = down, 0 = stop, -1 = up)
-int setPos = 0;
-
-//Stored data
+int setPos = 0;                     //The set position 0-100% by the client
 long currentPosition = 0;           //Current position of the blind
-long maxPosition = 2000000;         //Max position of the blind
+long maxPosition = 2000000;         //Max position of the blind. Initial value
 boolean loadDataSuccess = false;
 boolean saveItNow = false;          //If true will store positions to SPIFFS
+bool shouldSaveConfig = false;      //Used for WIFI Manager callback to save parameters
+boolean initLoop = true;            //To enable actions first time the loop is run
 
-Stepper_28BYJ_48 small_stepper(D1, D3, D2, D4);
+Stepper_28BYJ_48 small_stepper(D1, D3, D2, D4); //Initiate stepper driver
 
-
-// TCP server at port 80 will respond to HTTP requests
-WiFiServer server(80);
-// WebSockets will respond on port 81
-WebSocketsServer webSocket = WebSocketsServer(81);
+WiFiServer server(80);              // TCP server at port 80 will respond to HTTP requests
+WebSocketsServer webSocket = WebSocketsServer(81);  // WebSockets will respond on port 81
 
 
 /****************************************************************************************
@@ -82,6 +85,8 @@ bool loadConfig() {
   currentPosition = long(json["currentPosition"]);
   maxPosition = long(json["maxPosition"]);
   strcpy(config_name, json["config_name"]);
+  strcpy(mqtt_server, json["mqtt_server"]);
+  strcpy(mqtt_port, json["mqtt_port"]);
 
   return true;
 }
@@ -96,6 +101,8 @@ bool saveConfig() {
   json["currentPosition"] = currentPosition;
   json["maxPosition"] = maxPosition;
   json["config_name"] = config_name;
+  json["mqtt_server"] = mqtt_server;
+  json["mqtt_port"] = mqtt_port;
 
   File configFile = SPIFFS.open("/config.json", "w");
   if (!configFile) {
@@ -113,98 +120,158 @@ bool saveConfig() {
 /****************************************************************************************
 */
 
+/*
+   Connect to MQTT server and publish a message on the bus.
+   Finally, close down the connection and radio
+*/
+void sendmsg(String topic, String payload) {
+  if (!mqttActive)
+    return;
+
+  Serial.println("Trying to send msg..."+topic+":"+payload);
+  //Send status to MQTT bus if connected
+  if (psclient.connected()) {
+    psclient.publish(topic.c_str(), payload.c_str());
+  } else {
+    Serial.println("PubSub client is not connected...");
+  }
+}
+/*
+   Connect the MQTT client to the
+   MQTT server
+*/
+void reconnect() {
+  if (!mqttActive)
+    return;
+
+  // Loop until we're reconnected
+  while (!psclient.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    if (psclient.connect(mqttclientid.c_str())) {
+      Serial.println("connected");
+
+      //Send register MQTT message with JSON of chipid and ip-address
+      sendmsg("/raw/esp8266/register", "{ \"id\": \"" + String(ESP.getChipId()) + "\", \"ip\":\"" + WiFi.localIP().toString() + "\", \"type\":\"roller blind\", \"name\":\""+config_name+"\"}");
+
+      //Setup subscription
+      psclient.subscribe(inputTopic.c_str());
+
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(psclient.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      ESP.wdtFeed();
+      delay(5000);
+    }
+  }
+}
+/*
+   Common function to get a topic based on the chipid. Useful if flashing
+   more than one device
+*/
+String getMqttTopic(String type) {
+  return "/raw/esp8266/" + String(ESP.getChipId()) + "/" + type;
+}
+
+/****************************************************************************************
+*/
+void processMsg(String res, uint8_t clientnum){
+  /*
+     Check if calibration is running and if stop is received. Store the location
+  */
+  if (action == "set" && res == "(0)") {
+    maxPosition = currentPosition;
+    saveItNow = true;
+  }
+
+  /*
+     Below are actions based on inbound MQTT payload
+  */
+  if (res == "(start)") {
+    /*
+       Store the current position as the start position
+    */
+    currentPosition = 0;
+    path = 0;
+    saveItNow = true;
+    action = "manual";
+  } else if (res == "(max)") {
+    /*
+       Store the max position of a closed blind
+    */
+    maxPosition = currentPosition;
+    path = 0;
+    saveItNow = true;
+    action = "manual";
+  } else if (res == "(0)") {
+    /*
+       Stop
+    */
+    path = 0;
+    saveItNow = true;
+    action = "manual";
+  } else if (res == "(1)") {
+    /*
+       Move down without limit to max position
+    */
+    path = 1;
+    action = "manual";
+  } else if (res == "(-1)") {
+    /*
+       Move up without limit to top position
+    */
+    path = -1;
+    action = "manual";
+  } else if (res == "(update)") {
+    //Send position details to client
+    int set = (setPos * 100)/maxPosition;
+    int pos = (currentPosition * 100)/maxPosition;
+    sendmsg(outputTopic, "{ \"set\":"+String(set)+", \"position\":"+String(pos)+" }");
+    webSocket.sendTXT(clientnum, "{ \"set\":"+String(set)+", \"position\":"+String(pos)+" }");
+  } else if (res == "(ping)") {
+    //Do nothing
+  } else {
+    /*
+       Any other message will take the blind to a position
+       Incoming value = 0-100
+       path is now the position
+    */
+    path = maxPosition * res.toInt() / 100;
+    setPos = path; //Copy path for responding to updates
+    action = "auto";
+
+    int set = (setPos * 100)/maxPosition;
+    int pos = (currentPosition * 100)/maxPosition;
+
+    //Send the instruction to all connected devices
+    sendmsg(outputTopic, "{ \"set\":"+String(set)+", \"position\":"+String(pos)+" }");
+    webSocket.broadcastTXT("{ \"set\":"+String(set)+", \"position\":"+String(pos)+" }");
+  }
+}
 
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
     switch(type) {
-        case WStype_DISCONNECTED:
-            Serial.printf("[%u] Disconnected!\n", num);
-            break;
-        case WStype_CONNECTED:
-            {
-                IPAddress ip = webSocket.remoteIP(num);
-                Serial.printf("[%u] Connected from %d.%d.%d.%d url: %s\n", num, ip[0], ip[1], ip[2], ip[3], payload);
-
-            }
-            break;
         case WStype_TEXT:
             Serial.printf("[%u] get Text: %s\n", num, payload);
 
-            {String res = (char*)payload;
+            String res = (char*)payload;
 
-            /*
-               Check if calibration is running and if stop is received. Store the location
-            */
-            if (action == "set" && res == "(0)") {
-              maxPosition = currentPosition;
-              saveItNow = true;
-            }
-
-            /*
-               Below are actions based on inbound MQTT payload
-            */
-            if (res == "(start)") {
-              /*
-                 Store the current position as the start position
-              */
-              currentPosition = 0;
-              path = 0;
-              saveItNow = true;
-              action = "manual";
-            } else if (res == "(max)") {
-              /*
-                 Store the max position of a closed blind
-              */
-              maxPosition = currentPosition;
-              path = 0;
-              saveItNow = true;
-              action = "manual";
-            } else if (res == "(0)") {
-              /*
-                 Stop
-              */
-              path = 0;
-              saveItNow = true;
-              action = "manual";
-            } else if (res == "(1)") {
-              /*
-                 Move down without limit to max position
-              */
-              path = 1;
-              action = "manual";
-            } else if (res == "(-1)") {
-              /*
-                 Move up without limit to top position
-              */
-              path = -1;
-              action = "manual";
-            } else if (res == "(update)") {
-              //Send position details to client
-              int pos = (setPos * 100)/maxPosition;
-              webSocket.sendTXT(num, "{ \"type\":\"set\", \"value\":"+String(pos)+"}");
-              pos = (currentPosition * 100)/maxPosition;
-              webSocket.sendTXT(num, "{ \"type\":\"position\", \"value\":"+String(pos)+"}");
-            } else {
-              /*
-                 Any other message will take the blind to a position
-                 Incoming value = 0-100
-                 path is now the position
-              */
-              path = maxPosition * res.toInt() / 100;
-              setPos = path; //Copy path for responding to updates
-              action = "auto";
-
-              //Send the instruction to all connected devices
-              webSocket.broadcastTXT("{ \"type\":\"set\", \"value\":"+String(res.toInt())+"}");
-            }}
-            break;
-        case WStype_BIN:
-            Serial.printf("[%u] get binary length: %u\n", num, length);
-            hexdump(payload, length);
-
-            // send message to client
-            // webSocket.sendBIN(num, payload, length);
+            //Send to common MQTT and websocket function
+            processMsg(res, num);
             break;
     }
+}
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+  String res = "";
+  for (int i = 0; i < length; i++) {
+    res += String((char) payload[i]);
+  }
+  processMsg(res, NULL);
 }
 
 /**
@@ -232,12 +299,25 @@ void setup(void)
   delay(100);
   Serial.print("Starting now\n");
 
+  //Reset the action
   action = "";
 
+  //Set MQTT properties
+  outputTopic = getMqttTopic("out");
+  inputTopic = getMqttTopic("in");
+  mqttclientid = ("ESPClient-" + String(ESP.getChipId()));
+  Serial.println("Sending to Mqtt-topic: "+outputTopic);
+  Serial.println("Listening to Mqtt-topic: "+inputTopic);
+  //Setup MQTT Client ID
+  Serial.println("MQTT Client ID: "+String(mqttclientid));
+
+  //Set the WIFI hostname
   WiFi.hostname(config_name);
 
   //Define customer parameters for WIFI Manager
   WiFiManagerParameter custom_config_name("Name", "Bonjour name", config_name, 40);
+  WiFiManagerParameter custom_mqtt_server("server", "MQTT server (optional)", mqtt_server, 40);
+  WiFiManagerParameter custom_mqtt_port("port", "MQTT port", mqtt_port, 6);
 
   //Setup WIFI Manager
   WiFiManager wifiManager;
@@ -250,6 +330,8 @@ void setup(void)
   wifiManager.setSaveConfigCallback(saveConfigCallback);
   //add all your parameters here
   wifiManager.addParameter(&custom_config_name);
+  wifiManager.addParameter(&custom_mqtt_server);
+  wifiManager.addParameter(&custom_mqtt_port);
   wifiManager.autoConnect(APid.c_str(), APpw.c_str());
 
   //Load config upon start
@@ -265,6 +347,8 @@ void setup(void)
   if (shouldSaveConfig) {
     //read updated parameters
     strcpy(config_name, custom_config_name.getValue());
+    strcpy(mqtt_server, custom_mqtt_server.getValue());
+    strcpy(mqtt_port, custom_mqtt_port.getValue());
 
     //Save the data
     saveConfig();
@@ -302,6 +386,19 @@ void setup(void)
   //Start websocket
   webSocket.begin();
   webSocket.onEvent(webSocketEvent);
+
+  /* Setup connection for MQTT and for subscribed
+    messages IF a server address has been entered
+  */
+  if (String(mqtt_server) != ""){
+    Serial.println("Registering MQTT server");
+    psclient.setServer(mqtt_server, String(mqtt_port).toInt());
+    psclient.setCallback(mqttCallback);
+  } else {
+    mqttActive = false;
+    Serial.println("NOTE: No MQTT server address has been registered. Only using websockets");
+  }
+
 
   //Setup OTA
   {
@@ -341,6 +438,14 @@ void loop(void)
   //Websocket listner
   webSocket.loop();
 
+  //MQTT client
+  if (mqttActive){
+    if (!psclient.connected())
+      reconnect();
+    psclient.loop();
+  }
+
+
   /**
     Storing positioning data and turns off the power to the coils
   */
@@ -354,6 +459,7 @@ void loop(void)
       consumption
     */
     stopPowerToCoils();
+
   }
 
   /**
@@ -372,8 +478,10 @@ void loop(void)
     } else {
       path = 0;
       action = "";
+      int set = (setPos * 100)/maxPosition;
       int pos = (currentPosition * 100)/maxPosition;
-      webSocket.broadcastTXT("{ \"type\":\"position\", \"value\":"+String(pos)+"}");
+      webSocket.broadcastTXT("{ \"set\":"+String(set)+", \"position\":"+String(pos)+" }");
+      sendmsg(outputTopic, "{ \"set\":"+String(set)+", \"position\":"+String(pos)+" }");
       Serial.println("Stopped. Reached wanted position");
       saveItNow = true;
     }
@@ -386,25 +494,36 @@ void loop(void)
     currentPosition = currentPosition + path;
   }
 
+  /*
+     After running setup() the motor might still have
+     power on some of the coils. This is making sure that
+     power is off the first time loop() has been executed
+     to avoid heating the stepper motor draining
+     unnecessary current
+  */
+  if (initLoop) {
+    initLoop = false;
+    stopPowerToCoils();
+  }
 
   /**
     Serving the webpage
   */
   {
     // Check if a client has connected
-    WiFiClient client = server.available();
-    if (!client) {
+    WiFiClient webclient = server.available();
+    if (!webclient) {
       return;
     }
     Serial.println("New client");
 
     // Wait for data from client to become available
-    while(client.connected() && !client.available()){
+    while(webclient.connected() && !webclient.available()){
       delay(1);
     }
 
     // Read the first line of HTTP request
-    String req = client.readStringUntil('\r');
+    String req = webclient.readStringUntil('\r');
 
     // First line of HTTP request looks like "GET /path HTTP/1.1"
     // Retrieve the "/path" part by finding the spaces
@@ -418,12 +537,12 @@ void loop(void)
     req = req.substring(addr_start + 1, addr_end);
     Serial.print("Request: ");
     Serial.println(req);
-    client.flush();
+    webclient.flush();
 
     String s;
     if (req == "/")
     {
-      s = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<!DOCTYPE html><html><head> <meta http-equiv=\"Cache-Control\" content=\"no-cache, no-store, must-revalidate\"/> <meta http-equiv=\"Pragma\" content=\"no-cache\"/> <meta http-equiv=\"Expires\" content=\"0\"/> <link rel=\"stylesheet\" href=\"https://unpkg.com/onsenui/css/onsenui.css\"> <link rel=\"stylesheet\" href=\"https://unpkg.com/onsenui/css/onsen-css-components.min.css\"> <script src=\"https://unpkg.com/onsenui/js/onsenui.min.js\"></script> <script src=\"https://unpkg.com/jquery/dist/jquery.min.js\"></script> <script>var cversion=\"{VERSION}\"; var wsUri=\"ws://\"+location.host+\":81/\"; var repo=\"motor-on-roller-blind-ws\"; window.fn={}; window.fn.open=function(){var menu=document.getElementById('menu'); menu.open();}; window.fn.load=function(page){var content=document.getElementById('content'); var menu=document.getElementById('menu'); content.load(page) .then(menu.close.bind(menu)).then(setActions());}; var gotoPos=function(percent){doSend(percent);}; var instr=function(action){doSend(\"(\"+action+\")\");}; var setActions=function(){doSend(\"(update)\"); $.get(\"https://api.github.com/repos/nidayand/\"+repo+\"/releases\", function(data){if (data.length>0 && data[0].tag_name !==cversion){$(\"#cversion\").text(cversion); $(\"#nversion\").text(data[0].tag_name); $(\"#update-card\").show();}}); setTimeout(function(){$(\"#arrow-close\").on(\"click\", function(){$(\"#setrange\").val(100);gotoPos(100);}); $(\"#arrow-open\").on(\"click\", function(){$(\"#setrange\").val(0);gotoPos(0);}); $(\"#setrange\").on(\"change\", function(){gotoPos($(\"#setrange\").val())}); $(\"#arrow-up-man\").on(\"click\", function(){instr(\"-1\")}); $(\"#arrow-down-man\").on(\"click\", function(){instr(\"1\")}); $(\"#arrow-stop-man\").on(\"click\", function(){instr(\"0\")}); $(\"#set-start\").on(\"click\", function(){instr(\"start\")}); $(\"#set-max\").on(\"click\", function(){instr(\"max\");});}, 200);}; $(document).ready(function(){setActions();}); var websocket; var timeOut; function retry(){clearTimeout(timeOut); timeOut=setTimeout(function(){websocket=null; init();},2000);}; function init(){ons.notification.toast({message: 'Connecting...', timeout: 1000}); try{websocket=new WebSocket(wsUri); websocket.onclose=function (){}; websocket.onerror=function(evt){ons.notification.toast({message: 'Cannot connect to device', timeout: 2000}); retry();}; websocket.onopen=function(evt){ons.notification.toast({message: 'Connected to device', timeout: 2000}); doSend(\"(update)\");}; websocket.onclose=function(evt){ons.notification.toast({message: 'Disconnected. Retrying', timeout: 2000}); retry();}; websocket.onmessage=function(evt){try{var msg=JSON.parse(evt.data); if (msg.type==\"position\"){$(\"#pbar\").attr(\"value\", msg.value);}if (msg.type==\"set\"){$(\"#setrange\").val(msg.value);}}catch(err){}};}catch (e){ons.notification.toast({message: 'Cannot connect to device. Retrying...', timeout: 2000}); retry();};}; function doSend(msg){if (websocket && websocket.readyState==1){websocket.send(msg);}}; window.addEventListener(\"load\", init, false); window.onbeforeunload=function(){if (websocket && websocket.readyState==1){websocket.close();};}; </script></head><body><ons-splitter> <ons-splitter-side id=\"menu\" side=\"left\" width=\"220px\" collapse swipeable> <ons-page> <ons-list> <ons-list-item onclick=\"fn.load('home.html')\" tappable> Home </ons-list-item> <ons-list-item onclick=\"fn.load('settings.html')\" tappable> Settings </ons-list-item> <ons-list-item onclick=\"fn.load('about.html')\" tappable> About </ons-list-item> </ons-list> </ons-page> </ons-splitter-side> <ons-splitter-content id=\"content\" page=\"home.html\"></ons-splitter-content></ons-splitter><template id=\"home.html\"> <ons-page> <ons-toolbar> <div class=\"left\"> <ons-toolbar-button onclick=\"fn.open()\"> <ons-icon icon=\"md-menu\"></ons-icon> </ons-toolbar-button> </div><div class=\"center\">{NAME}</div></ons-toolbar><ons-card> <div class=\"title\">Adjust position</div><div class=\"content\"><p>Move the slider to the wanted position or use the arrows to open/close to the max positions</p></div><ons-row> <ons-col width=\"40px\" style=\"text-align: center; line-height: 31px;\"> </ons-col> <ons-col> <ons-progress-bar id=\"pbar\" value=\"75\"></ons-progress-bar> </ons-col> <ons-col width=\"40px\" style=\"text-align: center; line-height: 31px;\"> </ons-col> </ons-row> <ons-row> <ons-col width=\"40px\" style=\"text-align: center; line-height: 31px;\"> <ons-icon id=\"arrow-open\" icon=\"fa-arrow-up\" size=\"2x\"></ons-icon> </ons-col> <ons-col> <ons-range id=\"setrange\" style=\"width: 100%;\" value=\"25\"></ons-range> </ons-col> <ons-col width=\"40px\" style=\"text-align: center; line-height: 31px;\"> <ons-icon id=\"arrow-close\" icon=\"fa-arrow-down\" size=\"2x\"></ons-icon> </ons-col> </ons-row> </ons-card> <ons-card id=\"update-card\" style=\"display:none\"> <div class=\"title\">Update available</div><div class=\"content\">You are running <span id=\"cversion\"></span> and <span id=\"nversion\"></span> is the latest. Go to <a href=\"https://github.com/nidayand/motor-on-roller-blind-ws/releases\">the repo</a> to download</div></ons-card> </ons-page></template><template id=\"settings.html\"> <ons-page> <ons-toolbar> <div class=\"left\"> <ons-toolbar-button onclick=\"fn.open()\"> <ons-icon icon=\"md-menu\"></ons-icon> </ons-toolbar-button> </div><div class=\"center\"> Settings </div></ons-toolbar> <ons-card> <div class=\"title\">Instructions</div><div class=\"content\"> <p> <ol> <li>Use the arrows and stop button to navigate to the top position i.e. the blind is opened</li><li>Click the START button</li><li>Use the down arrow to navigate to the max closed position</li><li>Click the MAX button</li><li>Calibration is completed!</li></ol> </p></div></ons-card> <ons-card> <div class=\"title\">Control</div><ons-row style=\"width:100%\"> <ons-col style=\"text-align:center\"><ons-icon id=\"arrow-up-man\" icon=\"fa-arrow-up\" size=\"2x\"></ons-icon></ons-col> <ons-col style=\"text-align:center\"><ons-icon id=\"arrow-stop-man\" icon=\"fa-stop\" size=\"2x\"></ons-icon></ons-col> <ons-col style=\"text-align:center\"><ons-icon id=\"arrow-down-man\" icon=\"fa-arrow-down\" size=\"2x\"></ons-icon></ons-col> </ons-row> </ons-card> <ons-card> <div class=\"title\">Store</div><ons-row style=\"width:100%\"> <ons-col style=\"text-align:center\"><ons-button id=\"set-start\">Set Start</ons-button></ons-col> <ons-col style=\"text-align:center\">&nbsp;</ons-col> <ons-col style=\"text-align:center\"><ons-button id=\"set-max\">Set Max</ons-button></ons-col> </ons-row> </ons-card> </ons-page></template><template id=\"about.html\"> <ons-page> <ons-toolbar> <div class=\"left\"> <ons-toolbar-button onclick=\"fn.open()\"> <ons-icon icon=\"md-menu\"></ons-icon> </ons-toolbar-button> </div><div class=\"center\"> About </div></ons-toolbar> <ons-card> <div class=\"title\">Motor on a roller blind</div><div class=\"content\"> <p> <ul> <li>3d print files and instructions: <a href=\"https://www.thingiverse.com/thing:2392856\">https://www.thingiverse.com/thing:2392856</a></li><li>MQTT based version on Github: <a href=\"https://github.com/nidayand/motor-on-roller-blind\">https://github.com/nidayand/motor-on-roller-blind</a></li><li>WebSocket based version on Github: <a href=\"https://github.com/nidayand/motor-on-roller-blind-ws\">https://github.com/nidayand/motor-on-roller-blind-ws</a></li><li>Licensed unnder <a href=\"https://creativecommons.org/licenses/by/3.0/\">Creative Commons</a></li></ul> </p></div></ons-card> </ons-page></template></body></html>\r\n\r\n";
+      s = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<!DOCTYPE html><html><head> <meta http-equiv=\"Cache-Control\" content=\"no-cache, no-store, must-revalidate\"/> <meta http-equiv=\"Pragma\" content=\"no-cache\"/> <meta http-equiv=\"Expires\" content=\"0\"/> <title>{NAME}</title> <link rel=\"stylesheet\" href=\"https://unpkg.com/onsenui/css/onsenui.css\"> <link rel=\"stylesheet\" href=\"https://unpkg.com/onsenui/css/onsen-css-components.min.css\"> <script src=\"https://unpkg.com/onsenui/js/onsenui.min.js\"></script> <script src=\"https://unpkg.com/jquery/dist/jquery.min.js\"></script> <script>var cversion=\"{VERSION}\"; var wsUri=\"ws://\"+location.host+\":81/\"; var repo=\"motor-on-roller-blind-ws\"; window.fn={}; window.fn.open=function(){var menu=document.getElementById('menu'); menu.open();}; window.fn.load=function(page){var content=document.getElementById('content'); var menu=document.getElementById('menu'); content.load(page) .then(menu.close.bind(menu)).then(setActions());}; var gotoPos=function(percent){doSend(percent);}; var instr=function(action){doSend(\"(\"+action+\")\");}; var setActions=function(){doSend(\"(update)\"); $.get(\"https://api.github.com/repos/nidayand/\"+repo+\"/releases\", function(data){if (data.length>0 && data[0].tag_name !==cversion){$(\"#cversion\").text(cversion); $(\"#nversion\").text(data[0].tag_name); $(\"#update-card\").show();}}); setTimeout(function(){$(\"#arrow-close\").on(\"click\", function(){$(\"#setrange\").val(100);gotoPos(100);}); $(\"#arrow-open\").on(\"click\", function(){$(\"#setrange\").val(0);gotoPos(0);}); $(\"#setrange\").on(\"change\", function(){gotoPos($(\"#setrange\").val())}); $(\"#arrow-up-man\").on(\"click\", function(){instr(\"-1\")}); $(\"#arrow-down-man\").on(\"click\", function(){instr(\"1\")}); $(\"#arrow-stop-man\").on(\"click\", function(){instr(\"0\")}); $(\"#set-start\").on(\"click\", function(){instr(\"start\")}); $(\"#set-max\").on(\"click\", function(){instr(\"max\");});}, 200);}; $(document).ready(function(){setActions();}); var websocket; var timeOut; function retry(){clearTimeout(timeOut); timeOut=setTimeout(function(){websocket=null; init();},5000);}; function init(){ons.notification.toast({message: 'Connecting...', timeout: 1000}); try{websocket=new WebSocket(wsUri); websocket.onclose=function (){}; websocket.onerror=function(evt){ons.notification.toast({message: 'Cannot connect to device', timeout: 2000}); retry();}; websocket.onopen=function(evt){ons.notification.toast({message: 'Connected to device', timeout: 2000}); setTimeout(function(){doSend(\"(update)\");}, 1000);}; websocket.onclose=function(evt){ons.notification.toast({message: 'Disconnected. Retrying', timeout: 2000}); retry();}; websocket.onmessage=function(evt){try{var msg=JSON.parse(evt.data); if (typeof msg.position !=='undefined'){$(\"#pbar\").attr(\"value\", msg.position);}; if (typeof msg.set !=='undefined'){$(\"#setrange\").val(msg.set);};}catch(err){}};}catch (e){ons.notification.toast({message: 'Cannot connect to device. Retrying...', timeout: 2000}); retry();};}; function doSend(msg){if (websocket && websocket.readyState==1){websocket.send(msg);}}; window.addEventListener(\"load\", init, false); window.onbeforeunload=function(){if (websocket && websocket.readyState==1){websocket.close();};}; </script></head><body><ons-splitter> <ons-splitter-side id=\"menu\" side=\"left\" width=\"220px\" collapse swipeable> <ons-page> <ons-list> <ons-list-item onclick=\"fn.load('home.html')\" tappable> Home </ons-list-item> <ons-list-item onclick=\"fn.load('settings.html')\" tappable> Settings </ons-list-item> <ons-list-item onclick=\"fn.load('about.html')\" tappable> About </ons-list-item> </ons-list> </ons-page> </ons-splitter-side> <ons-splitter-content id=\"content\" page=\"home.html\"></ons-splitter-content></ons-splitter><template id=\"home.html\"> <ons-page> <ons-toolbar> <div class=\"left\"> <ons-toolbar-button onclick=\"fn.open()\"> <ons-icon icon=\"md-menu\"></ons-icon> </ons-toolbar-button> </div><div class=\"center\">{NAME}</div></ons-toolbar><ons-card> <div class=\"title\">Adjust position</div><div class=\"content\"><p>Move the slider to the wanted position or use the arrows to open/close to the max positions</p></div><ons-row> <ons-col width=\"40px\" style=\"text-align: center; line-height: 31px;\"> </ons-col> <ons-col> <ons-progress-bar id=\"pbar\" value=\"75\"></ons-progress-bar> </ons-col> <ons-col width=\"40px\" style=\"text-align: center; line-height: 31px;\"> </ons-col> </ons-row> <ons-row> <ons-col width=\"40px\" style=\"text-align: center; line-height: 31px;\"> <ons-icon id=\"arrow-open\" icon=\"fa-arrow-up\" size=\"2x\"></ons-icon> </ons-col> <ons-col> <ons-range id=\"setrange\" style=\"width: 100%;\" value=\"25\"></ons-range> </ons-col> <ons-col width=\"40px\" style=\"text-align: center; line-height: 31px;\"> <ons-icon id=\"arrow-close\" icon=\"fa-arrow-down\" size=\"2x\"></ons-icon> </ons-col> </ons-row> </ons-card> <ons-card id=\"update-card\" style=\"display:none\"> <div class=\"title\">Update available</div><div class=\"content\">You are running <span id=\"cversion\"></span> and <span id=\"nversion\"></span> is the latest. Go to <a href=\"https://github.com/nidayand/motor-on-roller-blind-ws/releases\">the repo</a> to download</div></ons-card> </ons-page></template><template id=\"settings.html\"> <ons-page> <ons-toolbar> <div class=\"left\"> <ons-toolbar-button onclick=\"fn.open()\"> <ons-icon icon=\"md-menu\"></ons-icon> </ons-toolbar-button> </div><div class=\"center\"> Settings </div></ons-toolbar> <ons-card> <div class=\"title\">Instructions</div><div class=\"content\"> <p> <ol> <li>Use the arrows and stop button to navigate to the top position i.e. the blind is opened</li><li>Click the START button</li><li>Use the down arrow to navigate to the max closed position</li><li>Click the MAX button</li><li>Calibration is completed!</li></ol> </p></div></ons-card> <ons-card> <div class=\"title\">Control</div><ons-row style=\"width:100%\"> <ons-col style=\"text-align:center\"><ons-icon id=\"arrow-up-man\" icon=\"fa-arrow-up\" size=\"2x\"></ons-icon></ons-col> <ons-col style=\"text-align:center\"><ons-icon id=\"arrow-stop-man\" icon=\"fa-stop\" size=\"2x\"></ons-icon></ons-col> <ons-col style=\"text-align:center\"><ons-icon id=\"arrow-down-man\" icon=\"fa-arrow-down\" size=\"2x\"></ons-icon></ons-col> </ons-row> </ons-card> <ons-card> <div class=\"title\">Store</div><ons-row style=\"width:100%\"> <ons-col style=\"text-align:center\"><ons-button id=\"set-start\">Set Start</ons-button></ons-col> <ons-col style=\"text-align:center\">&nbsp;</ons-col> <ons-col style=\"text-align:center\"><ons-button id=\"set-max\">Set Max</ons-button></ons-col> </ons-row> </ons-card> </ons-page></template><template id=\"about.html\"> <ons-page> <ons-toolbar> <div class=\"left\"> <ons-toolbar-button onclick=\"fn.open()\"> <ons-icon icon=\"md-menu\"></ons-icon> </ons-toolbar-button> </div><div class=\"center\"> About </div></ons-toolbar> <ons-card> <div class=\"title\">Motor on a roller blind</div><div class=\"content\"> <p> <ul> <li>3d print files and instructions: <a href=\"https://www.thingiverse.com/thing:2392856\">https://www.thingiverse.com/thing:2392856</a></li><li>MQTT based version on Github: <a href=\"https://github.com/nidayand/motor-on-roller-blind\">https://github.com/nidayand/motor-on-roller-blind</a></li><li>WebSocket based version on Github: <a href=\"https://github.com/nidayand/motor-on-roller-blind-ws\">https://github.com/nidayand/motor-on-roller-blind-ws</a></li><li>Licensed unnder <a href=\"https://creativecommons.org/licenses/by/3.0/\">Creative Commons</a></li></ul> </p></div></ons-card> </ons-page></template></body></html>\r\n\r\n";
       s.replace("{VERSION}","V"+version);
       s.replace("{NAME}",String(config_name));
       Serial.println("Sending 200");
@@ -437,10 +556,10 @@ void loop(void)
     //Print page but as max package is 2048 we need to break it down
     while(s.length()>2000){
       String d = s.substring(0,2000);
-      client.print(d);
+      webclient.print(d);
       s.replace(d,"");
     }
-    client.print(s);
+    webclient.print(s);
 
     Serial.println("Done with client");
 
