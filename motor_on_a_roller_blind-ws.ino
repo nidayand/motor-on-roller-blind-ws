@@ -3,13 +3,15 @@
 #include <ESP8266mDNS.h>
 #include <PubSubClient.h>
 #include <WiFiUdp.h>
-#include <ArduinoOTA.h>
 #include <WiFiManager.h>
 #include <ArduinoJson.h>
 #include "FS.h"
 #include <WiFiClient.h>
 #include <ESP8266WebServer.h>
 #include <WebSocketsServer.h>
+#include <ArduinoOTA.h>
+#include "NidayandHelper.h"
+#include "index_html.h"
 
 //--------------- CHANGE PARAMETERS ------------------
 //Configure Default Settings for Access Point logon
@@ -19,13 +21,13 @@ String APpw = "nidayand";           //Hardcoded password for access point
 //----------------------------------------------------
 
 // Version number for checking if there are new code releases and notifying the user
-String version = "1.2.2";
+String version = "1.3.0";
 
+NidayandHelper helper = NidayandHelper();
 
 //Fixed settings for WIFI
 WiFiClient espClient;
 PubSubClient psclient(espClient);   //MQTT client
-String mqttclientid;         //Generated MQTT client id
 char mqtt_server[40];             //WIFI config: MQTT server config (optional)
 char mqtt_port[6] = "1883";       //WIFI config: MQTT port config (optional)
 char mqtt_uid[40];             //WIFI config: MQTT server username (optional)
@@ -34,8 +36,6 @@ char mqtt_pwd[40];             //WIFI config: MQTT server password (optional)
 String outputTopic;               //MQTT topic for sending messages
 String inputTopic;                //MQTT topic for listening
 boolean mqttActive = true;
-boolean mqttLogon = false;
-
 char config_name[40];             //WIFI config: Bonjour name of device
 char config_rotation[40] = "false"; //WIFI config: Detault rotation is CCW
 
@@ -56,35 +56,10 @@ ESP8266WebServer server(80);              // TCP server at port 80 will respond 
 WebSocketsServer webSocket = WebSocketsServer(81);  // WebSockets will respond on port 81
 
 bool loadConfig() {
-  File configFile = SPIFFS.open("/config.json", "r");
-  if (!configFile) {
-    Serial.println("Failed to open config file");
+  if (!helper.loadconfig()){
     return false;
   }
-
-  size_t size = configFile.size();
-  if (size > 1024) {
-    Serial.println("Config file size is too large");
-    return false;
-  }
-
-  // Allocate a buffer to store contents of the file.
-  std::unique_ptr<char[]> buf(new char[size]);
-
-  // We don't use String here because ArduinoJson library requires the input
-  // buffer to be mutable. If you don't use ArduinoJson, you may as well
-  // use configFile.readString instead.
-  configFile.readBytes(buf.get(), size);
-
-  StaticJsonBuffer<200> jsonBuffer;
-  JsonObject& json = jsonBuffer.parseObject(buf.get());
-
-  if (!json.success()) {
-    Serial.println("Failed to parse config file");
-    return false;
-  }
-  json.printTo(Serial);
-  Serial.println();
+  JsonVariant json = helper.getconfig();
 
   //Store variables locally
   currentPosition = long(json["currentPosition"]);
@@ -115,18 +90,7 @@ bool saveConfig() {
   json["mqtt_pwd"] = mqtt_pwd;
   json["config_rotation"] = config_rotation;
 
-  File configFile = SPIFFS.open("/config.json", "w");
-  if (!configFile) {
-    Serial.println("Failed to open config file for writing");
-    return false;
-  }
-
-  json.printTo(configFile);
-
-  Serial.println("Saved JSON to SPIFFS");
-  json.printTo(Serial);
-  Serial.println();
-  return true;
+  return helper.saveconfig(json);
 }
 
 /*
@@ -137,13 +101,7 @@ void sendmsg(String topic, String payload) {
   if (!mqttActive)
     return;
 
-  Serial.println("Trying to send msg..."+topic+":"+payload);
-  //Send status to MQTT bus if connected
-  if (psclient.connected()) {
-    psclient.publish(topic.c_str(), payload.c_str());
-  } else {
-    Serial.println("PubSub client is not connected...");
-  }
+  helper.mqtt_publish(psclient, topic, payload);
 }
 /*
    Connect the MQTT client to the
@@ -153,35 +111,8 @@ void reconnect() {
   if (!mqttActive)
     return;
 
-  // Loop until we're reconnected
-  while (!psclient.connected()) {
-    Serial.print("Attempting MQTT connection...");
-    // Attempt to connect
-    if ((mqttLogon ? psclient.connect(mqttclientid.c_str(), mqtt_uid, mqtt_pwd) : psclient.connect(mqttclientid.c_str()))) {
-      Serial.println("connected");
+  helper.mqtt_reconnect(psclient, mqtt_uid, mqtt_pwd, { inputTopic.c_str() });
 
-      //Send register MQTT message with JSON of chipid and ip-address
-      sendmsg("/raw/esp8266/register", "{ \"id\": \"" + String(ESP.getChipId()) + "\", \"ip\":\"" + WiFi.localIP().toString() + "\", \"type\":\"roller blind\", \"name\":\""+config_name+"\"}");
-
-      //Setup subscription
-      psclient.subscribe(inputTopic.c_str());
-
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(psclient.state());
-      Serial.println(" try again in 5 seconds");
-      // Wait 5 seconds before retrying
-      ESP.wdtFeed();
-      delay(5000);
-    }
-  }
-}
-/*
-   Common function to get a topic based on the chipid. Useful if flashing
-   more than one device
-*/
-String getMqttTopic(String type) {
-  return "/raw/esp8266/" + String(ESP.getChipId()) + "/" + type;
 }
 
 /****************************************************************************************
@@ -298,12 +229,11 @@ void stopPowerToCoils() {
    Callback from WIFI Manager for saving configuration
 */
 void saveConfigCallback () {
-  Serial.println("Should save config");
   shouldSaveConfig = true;
 }
 
 void handleRoot() {
-  server.send(200, "text/html", "<!DOCTYPE html><html><head> <meta http-equiv=\"Cache-Control\" content=\"no-cache, no-store, must-revalidate\"/> <meta http-equiv=\"Pragma\" content=\"no-cache\"/> <meta http-equiv=\"Expires\" content=\"0\"/> <title>{NAME}</title> <link rel=\"stylesheet\" href=\"https://unpkg.com/onsenui/css/onsenui.css\"> <link rel=\"stylesheet\" href=\"https://unpkg.com/onsenui/css/onsen-css-components.min.css\"> <script src=\"https://unpkg.com/onsenui/js/onsenui.min.js\"></script> <script src=\"https://unpkg.com/jquery/dist/jquery.min.js\"></script> <script>var cversion=\"{VERSION}\"; var wsUri=\"ws://\"+location.host+\":81/\"; var repo=\"motor-on-roller-blind-ws\"; window.fn={}; window.fn.open=function(){var menu=document.getElementById('menu'); menu.open();}; window.fn.load=function(page){var content=document.getElementById('content'); var menu=document.getElementById('menu'); content.load(page) .then(menu.close.bind(menu)).then(setActions());}; var gotoPos=function(percent){doSend(percent);}; var instr=function(action){doSend(\"(\"+action+\")\");}; var setActions=function(){doSend(\"(update)\"); $.get(\"https://api.github.com/repos/nidayand/\"+repo+\"/releases\", function(data){if (data.length>0 && data[0].tag_name !==cversion){$(\"#cversion\").text(cversion); $(\"#nversion\").text(data[0].tag_name); $(\"#update-card\").show();}}); setTimeout(function(){$(\"#arrow-close\").on(\"click\", function(){$(\"#setrange\").val(100);gotoPos(100);}); $(\"#arrow-open\").on(\"click\", function(){$(\"#setrange\").val(0);gotoPos(0);}); $(\"#setrange\").on(\"change\", function(){gotoPos($(\"#setrange\").val())}); $(\"#arrow-up-man\").on(\"click\", function(){instr(\"-1\")}); $(\"#arrow-down-man\").on(\"click\", function(){instr(\"1\")}); $(\"#arrow-stop-man\").on(\"click\", function(){instr(\"0\")}); $(\"#set-start\").on(\"click\", function(){instr(\"start\")}); $(\"#set-max\").on(\"click\", function(){instr(\"max\");});}, 200);}; $(document).ready(function(){setActions();}); var websocket; var timeOut; function retry(){clearTimeout(timeOut); timeOut=setTimeout(function(){websocket=null; init();},5000);}; function init(){ons.notification.toast({message: 'Connecting...', timeout: 1000}); try{websocket=new WebSocket(wsUri); websocket.onclose=function (){}; websocket.onerror=function(evt){ons.notification.toast({message: 'Cannot connect to device', timeout: 2000}); retry();}; websocket.onopen=function(evt){ons.notification.toast({message: 'Connected to device', timeout: 2000}); setTimeout(function(){doSend(\"(update)\");}, 1000);}; websocket.onclose=function(evt){ons.notification.toast({message: 'Disconnected. Retrying', timeout: 2000}); retry();}; websocket.onmessage=function(evt){try{var msg=JSON.parse(evt.data); if (typeof msg.position !=='undefined'){$(\"#pbar\").attr(\"value\", msg.position);}; if (typeof msg.set !=='undefined'){$(\"#setrange\").val(msg.set);};}catch(err){}};}catch (e){ons.notification.toast({message: 'Cannot connect to device. Retrying...', timeout: 2000}); retry();};}; function doSend(msg){if (websocket && websocket.readyState==1){websocket.send(msg);}}; window.addEventListener(\"load\", init, false); window.onbeforeunload=function(){if (websocket && websocket.readyState==1){websocket.close();};}; </script></head><body><ons-splitter> <ons-splitter-side id=\"menu\" side=\"left\" width=\"220px\" collapse swipeable> <ons-page> <ons-list> <ons-list-item onclick=\"fn.load('home.html')\" tappable> Home </ons-list-item> <ons-list-item onclick=\"fn.load('settings.html')\" tappable> Settings </ons-list-item> <ons-list-item onclick=\"fn.load('about.html')\" tappable> About </ons-list-item> </ons-list> </ons-page> </ons-splitter-side> <ons-splitter-content id=\"content\" page=\"home.html\"></ons-splitter-content></ons-splitter><template id=\"home.html\"> <ons-page> <ons-toolbar> <div class=\"left\"> <ons-toolbar-button onclick=\"fn.open()\"> <ons-icon icon=\"md-menu\"></ons-icon> </ons-toolbar-button> </div><div class=\"center\">{NAME}</div></ons-toolbar><ons-card> <div class=\"title\">Adjust position</div><div class=\"content\"><p>Move the slider to the wanted position or use the arrows to open/close to the max positions</p></div><ons-row> <ons-col width=\"40px\" style=\"text-align: center; line-height: 31px;\"> </ons-col> <ons-col> <ons-progress-bar id=\"pbar\" value=\"75\"></ons-progress-bar> </ons-col> <ons-col width=\"40px\" style=\"text-align: center; line-height: 31px;\"> </ons-col> </ons-row> <ons-row> <ons-col width=\"40px\" style=\"text-align: center; line-height: 31px;\"> <ons-icon id=\"arrow-open\" icon=\"fa-arrow-up\" size=\"2x\"></ons-icon> </ons-col> <ons-col> <ons-range id=\"setrange\" style=\"width: 100%;\" value=\"25\"></ons-range> </ons-col> <ons-col width=\"40px\" style=\"text-align: center; line-height: 31px;\"> <ons-icon id=\"arrow-close\" icon=\"fa-arrow-down\" size=\"2x\"></ons-icon> </ons-col> </ons-row> </ons-card> <ons-card id=\"update-card\" style=\"display:none\"> <div class=\"title\">Update available</div><div class=\"content\">You are running <span id=\"cversion\"></span> and <span id=\"nversion\"></span> is the latest. Go to <a href=\"https://github.com/nidayand/motor-on-roller-blind-ws/releases\">the repo</a> to download</div></ons-card> </ons-page></template><template id=\"settings.html\"> <ons-page> <ons-toolbar> <div class=\"left\"> <ons-toolbar-button onclick=\"fn.open()\"> <ons-icon icon=\"md-menu\"></ons-icon> </ons-toolbar-button> </div><div class=\"center\"> Settings </div></ons-toolbar> <ons-card> <div class=\"title\">Instructions</div><div class=\"content\"> <p> <ol> <li>Use the arrows and stop button to navigate to the top position i.e. the blind is opened</li><li>Click the START button</li><li>Use the down arrow to navigate to the max closed position</li><li>Click the MAX button</li><li>Calibration is completed!</li></ol> </p></div></ons-card> <ons-card> <div class=\"title\">Control</div><ons-row style=\"width:100%\"> <ons-col style=\"text-align:center\"><ons-icon id=\"arrow-up-man\" icon=\"fa-arrow-up\" size=\"2x\"></ons-icon></ons-col> <ons-col style=\"text-align:center\"><ons-icon id=\"arrow-stop-man\" icon=\"fa-stop\" size=\"2x\"></ons-icon></ons-col> <ons-col style=\"text-align:center\"><ons-icon id=\"arrow-down-man\" icon=\"fa-arrow-down\" size=\"2x\"></ons-icon></ons-col> </ons-row> </ons-card> <ons-card> <div class=\"title\">Store</div><ons-row style=\"width:100%\"> <ons-col style=\"text-align:center\"><ons-button id=\"set-start\">Set Start</ons-button></ons-col> <ons-col style=\"text-align:center\">&nbsp;</ons-col> <ons-col style=\"text-align:center\"><ons-button id=\"set-max\">Set Max</ons-button></ons-col> </ons-row> </ons-card> </ons-page></template><template id=\"about.html\"> <ons-page> <ons-toolbar> <div class=\"left\"> <ons-toolbar-button onclick=\"fn.open()\"> <ons-icon icon=\"md-menu\"></ons-icon> </ons-toolbar-button> </div><div class=\"center\"> About </div></ons-toolbar> <ons-card> <div class=\"title\">Motor on a roller blind</div><div class=\"content\"> <p> <ul> <li>3d print files and instructions: <a href=\"https://www.thingiverse.com/thing:2392856\">https://www.thingiverse.com/thing:2392856</a></li><li>MQTT based version on Github: <a href=\"https://github.com/nidayand/motor-on-roller-blind\">https://github.com/nidayand/motor-on-roller-blind</a></li><li>WebSocket based version on Github: <a href=\"https://github.com/nidayand/motor-on-roller-blind-ws\">https://github.com/nidayand/motor-on-roller-blind-ws</a></li><li>Licensed unnder <a href=\"https://creativecommons.org/licenses/by/3.0/\">Creative Commons</a></li></ul> </p></div></ons-card> </ons-page></template></body></html>");
+  server.send(200, "text/html", INDEX_HTML);
 }
 void handleNotFound(){
   String message = "File Not Found\n\n";
@@ -330,13 +260,8 @@ void setup(void)
   action = "";
 
   //Set MQTT properties
-  outputTopic = getMqttTopic("out");
-  inputTopic = getMqttTopic("in");
-  mqttclientid = ("ESPClient-" + String(ESP.getChipId()));
-  Serial.println("Sending to Mqtt-topic: "+outputTopic);
-  Serial.println("Listening to Mqtt-topic: "+inputTopic);
-  //Setup MQTT Client ID
-  Serial.println("MQTT Client ID: "+String(mqttclientid));
+  outputTopic = helper.mqtt_gettopic("out");
+  inputTopic = helper.mqtt_gettopic("in");
 
   //Set the WIFI hostname
   WiFi.hostname(config_name);
@@ -355,8 +280,7 @@ void setup(void)
 
   //reset settings - for testing
   //clean FS, for testing
-  //SPIFFS.format();
-  //wifiManager.resetSettings();
+  //helper.resetsettings(wifiManager);
 
   wifiManager.setSaveConfigCallback(saveConfigCallback);
   //add all your parameters here
@@ -438,9 +362,7 @@ void setup(void)
     Serial.println("Registering MQTT server");
     psclient.setServer(mqtt_server, String(mqtt_port).toInt());
     psclient.setCallback(mqttCallback);
-    if (String(mqtt_uid) != "" and String(mqtt_pwd) != ""){
-      mqttLogon = true;
-    }
+
   } else {
     mqttActive = false;
     Serial.println("NOTE: No MQTT server address has been registered. Only using websockets");
@@ -453,12 +375,16 @@ void setup(void)
     ccw = false;
   }
 
+  //Update webpage
+  INDEX_HTML.replace("{VERSION}","V"+version);
+  INDEX_HTML.replace("{NAME}",String(config_name));
+
 
   //Setup OTA
+  //helper.ota_setup(config_name);
   {
-
     // Authentication to avoid unauthorized updates
-    //ArduinoOTA.setPassword((const char *)"nidayand");
+    //ArduinoOTA.setPassword(OTA_PWD);
 
     ArduinoOTA.setHostname(config_name);
 
@@ -498,9 +424,7 @@ void loop(void)
 
   //MQTT client
   if (mqttActive){
-    if (!psclient.connected())
-      reconnect();
-    psclient.loop();
+    helper.mqtt_reconnect(psclient, mqtt_uid, mqtt_pwd, { inputTopic.c_str() });
   }
 
 

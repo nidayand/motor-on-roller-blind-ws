@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+String INDEX_HTML = R"(<!DOCTYPE html>
 <html>
 <head>
   <meta http-equiv='Cache-Control' content='no-cache, no-store, must-revalidate' />
@@ -241,10 +241,9 @@
     <div class='content'>
     <p>
       <ul>
-        <li>3d print files and instructions: <a href='https://www.thingiverse.com/thing:2392856'>https://www.thingiverse.com/thing:2392856</a></li>
-        <li>MQTT based version on Github: <a href='https://github.com/nidayand/motor-on-roller-blind'>https://github.com/nidayand/motor-on-roller-blind</a></li>
-        <li>WebSocket based version on Github: <a href='https://github.com/nidayand/motor-on-roller-blind-ws'>https://github.com/nidayand/motor-on-roller-blind-ws</a></li>
-        <li>Licensed under <a href='https://creativecommons.org/licenses/by/3.0/'>Creative Commons</a></li>
+        <li>3d print files and instructions: <a href='https://www.thingiverse.com/thing:2392856' target='_blank'>https://www.thingiverse.com/thing:2392856</a></li>
+        <li>Github: <a href='https://github.com/nidayand/motor-on-roller-blind-ws' target='_blank'>https://github.com/nidayand/motor-on-roller-blind-ws</a></li>
+        <li>Licensed under <a href='https://creativecommons.org/licenses/by/3.0/' target='_blank'>Creative Commons</a></li>
       </ul>
     </p>
   </div>
@@ -254,3 +253,4 @@
 
 </body>
 </html>
+)";
