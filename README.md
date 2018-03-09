@@ -4,7 +4,7 @@ WebSocket based version of [motor-on-roller-blind](https://github.com/nidayand/m
 3d parts for printing are available on Thingiverse.com: ["motor on a roller blind"](https://www.thingiverse.com/thing:2392856)
 
  1. A tiny webserver is setup on the esp8266 that will serve one page to the client
- 2. Upon powering on the first time WIFI credentials, a hostname and - optional - MQTT server details is to be configured. Connect your computer to a new WIFI hotspot named **BlindsConnectAP**. Password = **nidayand**
+ 2. Upon powering on the first time WIFI credentials, a hostname and - optional - MQTT server details is to be configured. You can specify if you want **clockwise (CW) rotation** to close the blind and you can also specify **MQTT authentication** if required. Connect your computer to a new WIFI hotspot named **BlindsConnectAP**. Password = **nidayand**
  3. Connect to your normal WIFI with your client and go to the IP address of the device - or if you have an mDNS supported device (e.g. iOS, OSX or have Bonjour installed) you can go to http://{hostname}.local. If you don't know the IP-address of the device check your router for the leases (or check the serial console in the Arduino IDE or check the `/raw/esp8266/register` MQTT message if you are using an MQTT server)
  4. As the webpage is loaded it will connect through a websocket directly to the device to progress updates and to control the device. If any other client connects the updates will be in sync.
  5. Go to the Settings page to calibrate the motor with the start and end positions of the roller blind. Follow the instructions on the page
