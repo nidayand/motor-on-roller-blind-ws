@@ -88,9 +88,10 @@ void NidayandHelper::mqtt_reconnect(PubSubClient& psclient, String uid, String p
       this->mqtt_publish(psclient, "/raw/esp8266/register", "{ \"id\": \"" + String(ESP.getChipId()) + "\", \"ip\":\"" + WiFi.localIP().toString() +"\"}");
 
       //Setup subscription
-      if (topics.empty()){
+      if (!topics.empty()){
         for (const char* t : topics){
            psclient.subscribe(t);
+           Serial.println("Subscribed to "+String(t));
         }
       }
 

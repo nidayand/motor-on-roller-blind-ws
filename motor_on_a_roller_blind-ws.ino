@@ -103,17 +103,7 @@ void sendmsg(String topic, String payload) {
 
   helper.mqtt_publish(psclient, topic, payload);
 }
-/*
-   Connect the MQTT client to the
-   MQTT server
-*/
-void reconnect() {
-  if (!mqttActive)
-    return;
 
-  helper.mqtt_reconnect(psclient, mqtt_uid, mqtt_pwd, { inputTopic.c_str() });
-
-}
 
 /****************************************************************************************
 */
