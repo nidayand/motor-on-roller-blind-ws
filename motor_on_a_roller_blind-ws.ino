@@ -21,7 +21,7 @@ String APpw = "nidayand";           //Hardcoded password for access point
 //----------------------------------------------------
 
 // Version number for checking if there are new code releases and notifying the user
-String version = "1.3.0";
+String version = "1.3.1";
 
 NidayandHelper helper = NidayandHelper();
 
