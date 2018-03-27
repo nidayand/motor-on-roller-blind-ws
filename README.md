@@ -33,9 +33,12 @@ Simply do not enter any string in the MQTT server form field upon WIFI configura
 - WbSocketsServer: https://github.com/Links2004/arduinoWebSockets
 
 #Screenshots
-##Control the blind
+
+##Control
 ![Control](https://user-images.githubusercontent.com/2181965/31178217-a5351678-a918-11e7-9611-3e8256c873a4.png)
-##Calibrate!
-[Settings](https://user-images.githubusercontent.com/2181965/31178216-a4f7194a-a918-11e7-85dd-8e189cfc031c.png)
+
+##Calibrate
+![Settings](https://user-images.githubusercontent.com/2181965/31178216-a4f7194a-a918-11e7-85dd-8e189cfc031c.png)
+
 ##Communication settings
  ![WIFI Manager](https://user-images.githubusercontent.com/2181965/37288794-75244c84-2608-11e8-8c27-a17e1e854761.jpg)
