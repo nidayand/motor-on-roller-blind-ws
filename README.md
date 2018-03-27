@@ -25,5 +25,17 @@ Simply do not enter any string in the MQTT server form field upon WIFI configura
 - `(1)`- (manual mode) Will close the curtain. Requires `(0)` to stop the motor
 - `0-100` - (auto mode) A number between 0-100 to set % of opened blind. Requires calibration before use. E.g. `50` will open it to 50%
 
-![Control](https://user-images.githubusercontent.com/2181965/31178217-a5351678-a918-11e7-9611-3e8256c873a4.png) ![Settings](https://user-images.githubusercontent.com/2181965/31178216-a4f7194a-a918-11e7-85dd-8e189cfc031c.png)
+#Required libraries (3rd party)
+- Stepper_28BYJ_48: https://github.com/thomasfredericks/Stepper_28BYJ_48/
+- PubSubClient: https://github.com/knolleary/pubsubclient/
+- ArduinoJson: https://github.com/bblanchon/ArduinoJson
+- WIFIManager: https://github.com/tzapu/WiFiManager
+- WbSocketsServer: https://github.com/Links2004/arduinoWebSockets
+
+#Screenshots
+##Control the blind
+![Control](https://user-images.githubusercontent.com/2181965/31178217-a5351678-a918-11e7-9611-3e8256c873a4.png)
+##Calibrate!
+[Settings](https://user-images.githubusercontent.com/2181965/31178216-a4f7194a-a918-11e7-85dd-8e189cfc031c.png)
+##Communication settings
  ![WIFI Manager](https://user-images.githubusercontent.com/2181965/37288794-75244c84-2608-11e8-8c27-a17e1e854761.jpg)
