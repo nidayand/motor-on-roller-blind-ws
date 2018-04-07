@@ -25,6 +25,24 @@ Simply do not enter any string in the MQTT server form field upon WIFI configura
 - `(1)`- (manual mode) Will close the curtain. Requires `(0)` to stop the motor
 - `0-100` - (auto mode) A number between 0-100 to set % of opened blind. Requires calibration before use. E.g. `50` will open it to 50%
 
+# Manual operation
+For those who do not want to carry smartphone all the time, device supports manual operation using buttons - up and down.
+Additional reset button is added to clean configuration, device will be just like freshly flashed.
+Calibration using webpage is still needed though.
+
+## Moving up and down
+Buttons are active low using internal pullup resistors. 
+If you plan to use buttons _very_  far from device please use external pullup resistors and `INPUT` mode instead of `INPUT_PULLUP`.
+
+## Resetting 
+1. Press and hold reset button
+2. Press and hold up and down buttons
+3. Hold for 5 seconds
+4. Release buttons and wait for device to reboot
+
+NOTE: After flashing - remove power source, otherwise device will hang after reset.
+This is one-time-only issue so next resets will be done properly.
+
 # Required libraries (3rd party)
 - Stepper_28BYJ_48: https://github.com/thomasfredericks/Stepper_28BYJ_48/
 - PubSubClient: https://github.com/knolleary/pubsubclient/
