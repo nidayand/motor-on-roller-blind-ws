@@ -428,7 +428,7 @@ void loop(void)
       small_stepper.step(ccw ? -1 : 1);
       currentPosition = currentPosition - 1;
       yield();
-      delay(50);
+      delay(1);
       pres_cont = true;
     }
     while (!digitalRead(btnup) && currentPosition < maxPosition) {
@@ -436,7 +436,7 @@ void loop(void)
       small_stepper.step(ccw ? 1 : -1);
       currentPosition = currentPosition + 1;
       yield();
-      delay(50);
+      delay(1);
       pres_cont = true;
     }
     if (pres_cont) {
