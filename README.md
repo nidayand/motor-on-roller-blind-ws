@@ -46,7 +46,7 @@ This is one-time-only issue so next resets will be done properly.
 # Required libraries (3rd party)
 - Stepper_28BYJ_48: https://github.com/thomasfredericks/Stepper_28BYJ_48/
 - PubSubClient: https://github.com/knolleary/pubsubclient/
-- ArduinoJson: https://github.com/bblanchon/ArduinoJson
+- ArduinoJson v5: https://github.com/bblanchon/ArduinoJson
 - WIFIManager: https://github.com/tzapu/WiFiManager
 - WbSocketsServer: https://github.com/Links2004/arduinoWebSockets
 
